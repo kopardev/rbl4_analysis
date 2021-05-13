@@ -21,6 +21,6 @@ for (f in files){
 m=reduce(results,merge_results)
 # replace NAs with 1
 x=list();for (i in colnames(m)){x[i]=1}
-m=m %>% replace_na(x)
+m=m %>% replace_na(x) %>% separate(col="Gene",into=c("EnsemblID","GeneName"),sep="\\|")
 
 write.table(m,file = "results/combined_DESeq2_DEG_results.txt",col.names = TRUE,row.names = FALSE,quote = FALSE,sep = "\t")
