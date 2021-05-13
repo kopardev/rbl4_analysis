@@ -1,0 +1,254 @@
+---
+title: "HTseq_counts"
+author: "Vishal Koparde, PhD [CCBR]"
+date: "3/2/2021"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+params:
+  folder: "~/Projects/rbl4/htseq/revstranded_counts"
+  # condition1: "KO_labeled_mutated"
+  # condition2: "WT_labeled_mutated"
+  # filenamepattern: "_labeled.mutated.counts"
+  # cpmfilter: 0.5
+  condition1: "KO_L"
+  condition2: "WT_L"
+  countsfile: "count_matrix.htseq.txt"
+  cpmfilter: 1.0
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+setwd(params$folder)
+library("tidyverse")
+library("reshape")
+library("DESeq2")
+library("edgeR")
+library("DT")
+library("ggplot2")
+library("plotly")
+library("EnhancedVolcano")
+library("RUVSeq")
+library("EDASeq")
+library("amap")
+# library("consensusDE")
+```
+
+
+```{r create_countmatrix,echo=FALSE}
+x <- read.csv(params$countsfile,header = TRUE,sep="\t")
+x %>% unite("Gene",c("EnsemblID", "GeneName"),sep="|") %>% `row.names<-`(.,NULL) %>% column_to_rownames(var="Gene") -> x
+g1 <- params$condition1
+g2 <- params$condition2
+allsamples=colnames(x)
+allconditions=as.factor(gsub("\\d+","",as.factor(allsamples)))
+kg1samples=allconditions==g1
+kg2samples=allconditions==g2
+rawcountmatrix=x[,kg1samples|kg2samples]
+countmatrix=rawcountmatrix
+g1cm_cpm=edgeR::cpm(x[,kg1samples])
+g2cm_cpm=edgeR::cpm(x[,kg2samples])
+
+k_lowcount=rowSums(countmatrix<15)==ncol(countmatrix)
+kg1_lowcpm=rowSums(g1cm_cpm<params$cpmfilter)==ncol(g1cm_cpm)
+kg2_lowcpm=rowSums(g2cm_cpm<params$cpmfilter)==ncol(g2cm_cpm)
+
+k_low=k_lowcount|kg1_lowcpm|kg2_lowcpm
+
+countmatrix=countmatrix[!k_low,]
+
+samples=colnames(countmatrix)
+# print(samples)
+condition=as.factor(gsub("\\d+","",as.factor(samples)))
+condition=relevel(condition,params$condition2)
+# print(condition)
+
+```
+
+```{r functions,echo=FALSE}
+# Multiple plot function
+#
+# ggplot objects can be passed in ..., or to plotlist (as a list of ggplot objects)
+# - cols:   Number of columns in layout
+# - layout: A matrix specifying the layout. If present, 'cols' is ignored.
+#
+# If the layout is something like matrix(c(1,2,3,3), nrow=2, byrow=TRUE),
+# then plot 1 will go in the upper left, 2 will go in the upper right, and
+# 3 will go all the way across the bottom.
+#
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+  
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+  
+  numPlots = length(plots)
+  
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                     ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+  
+  if (numPlots==1) {
+    print(plots[[1]])
+    
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+    
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+      
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+get_contrast_countmatrix_coldata<-function(rawcountmatrix,countmatrix,samples,condition,condition1,condition2){
+  results=list()
+  coldata=as.data.frame(samples)
+  colnames(coldata)=c("samples")
+  coldata$condition=condition
+  results[["rawcountmatrix"]]=rawcountmatrix
+  results[["countmatrix_cpm_filtered"]]=countmatrix
+  results[["coldata"]]=coldata
+  return(results)
+}
+get_dds<-function(cm_coldata){
+  dds <- DESeqDataSetFromMatrix(countData = as.matrix(cm_coldata$countmatrix_cpm_filtered),
+                              colData=cm_coldata$coldata,
+                              design=~condition)
+  dds<-DESeq(dds,fitType='local')
+  return(dds)
+}
+get_dgelist<-function(cm_coldata){
+  results=list()
+  phenodata=cm_coldata$coldata %>% column_to_rownames(var="samples")
+  newx=phenodata$condition
+  newx=relevel(newx,levels(newx)[grep("WT",levels(newx))])
+  set=newSeqExpressionSet(counts=as.matrix(cm_coldata$countmatrix_cpm_filtered),phenoData = phenodata)
+  design <- model.matrix(~newx, data=pData(set))
+  y <- DGEList(counts=counts(set), group=newx)
+  y <- calcNormFactors(y, method="TMM")
+  y <- estimateGLMCommonDisp(y, design)
+  y <- estimateGLMTagwiseDisp(y, design)
+  fit <- glmFit(y, design)
+  lrt <- glmLRT(fit, coef=2)
+  top <- topTags(lrt, n=nrow(set))$table
+  results[["set"]]=set
+  results[["design"]]=design
+  results[["dgelist"]]=y
+  results[["fit"]]=fit
+  results[["lrt"]]=lrt
+  results[["top"]]=top
+  results[["newx"]]=newx
+  return(results)
+}
+plot_distributions<-function(dds,cm_coldata){
+  ndata=as.data.frame(counts(dds,normalized=TRUE))
+  df.m <- melt(as.data.frame(ndata))
+  df.input=melt(as.data.frame(cm_coldata$countmatrix_cpm_filtered))
+  a=ggplot(df.input) + geom_density(aes(x = value, colour = variable)) + labs(x = NULL) + theme(legend.position='bottom') + scale_x_log10()+ggtitle("Before normalization")
+  b=ggplot(df.m) + geom_density(aes(x = value, colour = variable)) + labs(x = NULL)  + scale_x_log10() + theme(legend.position='bottom') +ggtitle("After normalization")
+  c=grid.arrange(a,b,ncol=2)
+  return(c)
+}
+```
+
+## `r params$condition1` vs `r params$condition2`
+
+### Counts distribution
+
+```{r labeled_mutated, echo=FALSE}
+cm_coldata=get_contrast_countmatrix_coldata(rawcountmatrix = rawcountmatrix,
+                                            countmatrix = countmatrix,
+                                            samples = samples,
+                                            condition = condition,
+                                            condition1 = g1,
+                                            condition2 = g2)
+
+
+dds=get_dds(cm_coldata)
+deseq2_results=as.data.frame(results(dds))
+# dds<-get_dds(cm_coldata=cm_coldata)
+edger_results=get_dgelist(cm_coldata = cm_coldata)
+# plot_distributions(dds = dds, cm_coldata = cm_coldata)
+# par(mfcol=c(1,2))
+# png("1.png")
+# EDASeq::plotRLE(edgeR::cpm(counts(set))*1e2, outline=FALSE, col=as.numeric(newx)+1,main="BEFORE")
+# dev.off()
+# png("2.png")
+EDASeq::plotRLE(round(edgeR::cpm(edger_results[["dgelist"]])*1e2), outline=FALSE, col=as.numeric(edger_results[["newx"]])+1)
+# dev.off()
+  # img1 <-  grid::rasterGrob(as.raster(readPNG("1.png")),
+                            # interpolate = FALSE)
+  # img2 <-  grid::rasterGrob(as.raster(readPNG("2.png")),
+                            # interpolate = FALSE)
+# grid.arrange(img1, img2, ncol = 2)
+# EDASeq::plotPCA(set, col=as.numeric(newx),cex=1.2,main="BEFORE")
+# EDASeq::plotPCA(set1, col=as.numeric(newx),cex=1.2,main="AFTER")
+
+```
+
+### plotMD
+
+```{r plotmd, echo=FALSE}
+limma::plotMD(edger_results[["dgelist"]])
+```
+
+### PlotSmear
+
+```{r smearplot, echo=FALSE}
+edgeR::plotSmear(edger_results[["dgelist"]])
+```
+
+### PCA
+
+```{r labeled_mutated1, echo=FALSE}
+# rld <- rlogTransformation(dds, blind=TRUE)
+# rldm=assay(rld)
+# DESeq2::plotPCA(rld,intgroup=c("condition"))
+EDASeq::plotPCA(round(edgeR::cpm(edger_results[["dgelist"]])*1e2),col=as.numeric(edger_results[["newx"]])+1)
+```
+
+### Sample Heatmap
+
+
+```{r labeled_mutated2,echo=FALSE}
+edf=edgeR::cpm(edger_results[["dgelist"]])*1e2
+tedf= t(edf)
+d=Dist(tedf,method="spearman",diag=TRUE)
+m=as.matrix(d)
+
+new.palette=colorRampPalette(c("red","yellow","white"),space="rgb")
+#levelplot(m[1:ncol(m),ncol(m):1],col.regions=new.palette(20))
+heatmap(m,symm=TRUE,col=new.palette(4),cexRow=1,cexCol = 0.5)
+```
+
+### DEGs
+
+```{r outputtable,echo=FALSE}
+res=edger_results[["top"]]
+restmp=as.data.frame(res)
+restmp$FoldChange <- ifelse(restmp$logFC<0, -1/(2^restmp$logFC), 2^restmp$logFC)
+restmp <- restmp %>% rownames_to_column(var="gene") %>% separate(col="gene",into=c("ensemblID","gene_name"),sep="\\|",remove = TRUE)
+fn=paste("DESeq2_DEG_",condition1,"-",condition2,"_all_genes_cpm_",params$cpmfilter,".txt",sep="")
+write.table(restmp,file=fn,sep="\t",row.names = FALSE,quote = FALSE,col.names = TRUE) 
+```
+
+```{r dt,echo=FALSE, warning=FALSE,message=FALSE,results='asis'}
+DT::datatable(as.data.frame(restmp), options=list(pageLength = 50,order = list(list(6, 'asc'))))
+```
+
+### Volcano
+```{r volcano,echo=FALSE,fig.width=8,fig.height=10,fig.align='center'}
+EnhancedVolcano(res,lab=rownames(res),x="logFC",y="PValue")
+```
