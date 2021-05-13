@@ -1,7 +1,6 @@
 ---
 title: "HTseq_counts"
 author: "Vishal Koparde, PhD [CCBR]"
-date: "3/2/2021"
 output: 
   html_document:
     toc: true
