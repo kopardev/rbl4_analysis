@@ -7,14 +7,14 @@ output:
     toc: true
     toc_float: true
 params:
-  folder: "~/Projects/rbl4/htseq/revstranded_counts"
+  folder: "."
   # condition1: "KO_labeled_mutated"
   # condition2: "WT_labeled_mutated"
   # filenamepattern: "_labeled.mutated.counts"
   # cpmfilter: 0.5
   condition1: "KO_L"
   condition2: "WT_L"
-  countsfile: "count_matrix.htseq.txt"
+  countsfile: "data/count_matrix.htseq.txt"
   cpmfilter: 1.0
 ---
 
@@ -22,16 +22,17 @@ params:
 knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
 setwd(params$folder)
 library("tidyverse")
-library("reshape")
+library("stats")
+# library("reshape")
 library("DESeq2")
 library("edgeR")
 library("DT")
 library("ggplot2")
-library("plotly")
+# library("plotly")
 library("EnhancedVolcano")
-library("RUVSeq")
-library("EDASeq")
-library("amap")
+# library("RUVSeq")
+# library("EDASeq")
+# library("amap")
 # library("consensusDE")
 ```
 
@@ -59,10 +60,11 @@ k_low=k_lowcount|kg1_lowcpm|kg2_lowcpm
 countmatrix=countmatrix[!k_low,]
 
 samples=colnames(countmatrix)
-# print(samples)
+print(samples)
 condition=as.factor(gsub("\\d+","",as.factor(samples)))
+print(condition)
 condition=relevel(condition,params$condition2)
-# print(condition)
+print(condition)
 
 ```
 
@@ -152,6 +154,24 @@ get_dgelist<-function(cm_coldata){
   results[["newx"]]=newx
   return(results)
 }
+print_sig_deg<-function(resultsdf){
+  k_padj=resultsdf$padj<=0.05
+  k_up=resultsdf$FC >= 2
+  k_down=resultsdf$FC <= -2
+  up=k_up&k_padj
+  down=k_down&k_padj
+  print("UP regulated")
+  print(table(up))
+  print("DOWN regulated")
+  print(table(down))
+}
+log2fc2fc<-function(log2fc){
+  retval=2^log2fc
+  if (retval<1){
+    retval=-1/retval
+  }
+  return(retval)
+}
 plot_distributions<-function(dds,cm_coldata){
   ndata=as.data.frame(counts(dds,normalized=TRUE))
   df.m <- melt(as.data.frame(ndata))
@@ -161,13 +181,30 @@ plot_distributions<-function(dds,cm_coldata){
   c=grid.arrange(a,b,ncol=2)
   return(c)
 }
+get_results<-function(dds){
+  results=as.data.frame(results(dds)) %>% drop_na()
+  results$FC=unlist(lapply(results$log2FoldChange,log2fc2fc))
+  results=results %>% relocate(FC,.after=log2FoldChange)
+  return(results)
+}
+get_up_sig_genes<-function(resultsdf){
+  k_adj=resultsdf$padj<=0.05
+  k_up=resultsdf$FC >= 2
+  return(rownames(resultsdf[k_adj&k_up,]))
+}
+get_down_sig_genes<-function(resultsdf){
+  k_adj=resultsdf$padj<=0.05
+  k_down=resultsdf$FC <= -2
+  return(rownames(resultsdf[k_adj&k_down,]))
+}
+
 ```
 
 ## `r params$condition1` vs `r params$condition2`
 
 ### Counts distribution
 
-```{r labeled_mutated, echo=FALSE}
+```{r degs, echo=FALSE}
 cm_coldata=get_contrast_countmatrix_coldata(rawcountmatrix = rawcountmatrix,
                                             countmatrix = countmatrix,
                                             samples = samples,
@@ -177,78 +214,71 @@ cm_coldata=get_contrast_countmatrix_coldata(rawcountmatrix = rawcountmatrix,
 
 
 dds=get_dds(cm_coldata)
-deseq2_results=as.data.frame(results(dds))
-# dds<-get_dds(cm_coldata=cm_coldata)
-edger_results=get_dgelist(cm_coldata = cm_coldata)
-# plot_distributions(dds = dds, cm_coldata = cm_coldata)
-# par(mfcol=c(1,2))
-# png("1.png")
-# EDASeq::plotRLE(edgeR::cpm(counts(set))*1e2, outline=FALSE, col=as.numeric(newx)+1,main="BEFORE")
-# dev.off()
-# png("2.png")
-EDASeq::plotRLE(round(edgeR::cpm(edger_results[["dgelist"]])*1e2), outline=FALSE, col=as.numeric(edger_results[["newx"]])+1)
-# dev.off()
-  # img1 <-  grid::rasterGrob(as.raster(readPNG("1.png")),
-                            # interpolate = FALSE)
-  # img2 <-  grid::rasterGrob(as.raster(readPNG("2.png")),
-                            # interpolate = FALSE)
-# grid.arrange(img1, img2, ncol = 2)
-# EDASeq::plotPCA(set, col=as.numeric(newx),cex=1.2,main="BEFORE")
-# EDASeq::plotPCA(set1, col=as.numeric(newx),cex=1.2,main="AFTER")
+dds_vst=vst(dds)
+vstcounts=assay(dds_vst)
+boxplot(vstcounts)
+
 
 ```
 
-### plotMD
 
-```{r plotmd, echo=FALSE}
-limma::plotMD(edger_results[["dgelist"]])
+### DEGs
+
+```{r count_dist,echo=FALSE}
+deseq2_results=get_results(dds)
+# print_sig_deg(deseq2_results)
+x=as.data.frame(c("UP","DOWN"))
+colnames(x)=c("Regulated")
+up_sig_genes=get_up_sig_genes(deseq2_results)
+down_sig_genes=get_down_sig_genes(deseq2_results)
+x$Ngenes=c(length(up_sig_genes),length(down_sig_genes))
+ggplot(data=x,aes(x=Regulated,y=Ngenes))+geom_bar(stat="identity",aes(fill=Regulated), cex=2)+coord_flip()+geom_text(aes(label=Ngenes), hjust=1.6, color="black", size=3.5)+theme_minimal()+ylab("Significant Genes")+xlab("")
+
 ```
 
-### PlotSmear
 
-```{r smearplot, echo=FALSE}
-edgeR::plotSmear(edger_results[["dgelist"]])
+### plotMA
+
+```{r plotma, echo=FALSE}
+DESeq2::plotMA(dds)
 ```
 
 ### PCA
 
-```{r labeled_mutated1, echo=FALSE}
-# rld <- rlogTransformation(dds, blind=TRUE)
-# rldm=assay(rld)
-# DESeq2::plotPCA(rld,intgroup=c("condition"))
-EDASeq::plotPCA(round(edgeR::cpm(edger_results[["dgelist"]])*1e2),col=as.numeric(edger_results[["newx"]])+1)
+```{r pca, echo=FALSE}
+DESeq2::plotPCA(dds_vst,ntop=1000)+theme_bw()
 ```
 
-### Sample Heatmap
+
+<!-- ### Sample Heatmap -->
 
 
-```{r labeled_mutated2,echo=FALSE}
-edf=edgeR::cpm(edger_results[["dgelist"]])*1e2
-tedf= t(edf)
-d=Dist(tedf,method="spearman",diag=TRUE)
-m=as.matrix(d)
+<!-- ```{r labeled_mutated2,echo=FALSE} -->
+<!-- edf=edgeR::cpm(edger_results[["dgelist"]])*1e2 -->
+<!-- tedf= t(edf) -->
+<!-- d=Dist(tedf,method="spearman",diag=TRUE) -->
+<!-- m=as.matrix(d) -->
 
-new.palette=colorRampPalette(c("red","yellow","white"),space="rgb")
-#levelplot(m[1:ncol(m),ncol(m):1],col.regions=new.palette(20))
-heatmap(m,symm=TRUE,col=new.palette(4),cexRow=1,cexCol = 0.5)
-```
+<!-- new.palette=colorRampPalette(c("red","yellow","white"),space="rgb") -->
+<!-- #levelplot(m[1:ncol(m),ncol(m):1],col.regions=new.palette(20)) -->
+<!-- heatmap(m,symm=TRUE,col=new.palette(4),cexRow=1,cexCol = 0.5) -->
+<!-- ``` -->
 
 ### DEGs
 
 ```{r outputtable,echo=FALSE}
-res=edger_results[["top"]]
-restmp=as.data.frame(res)
-restmp$FoldChange <- ifelse(restmp$logFC<0, -1/(2^restmp$logFC), 2^restmp$logFC)
-restmp <- restmp %>% rownames_to_column(var="gene") %>% separate(col="gene",into=c("ensemblID","gene_name"),sep="\\|",remove = TRUE)
-fn=paste("DESeq2_DEG_",condition1,"-",condition2,"_all_genes_cpm_",params$cpmfilter,".txt",sep="")
-write.table(restmp,file=fn,sep="\t",row.names = FALSE,quote = FALSE,col.names = TRUE) 
+out_df=deseq2_results %>% rownames_to_column(var="Gene") %>% separate(col="Gene",into=c("EnsemblID","GeneName"),sep="\\|")
+fn=paste("DESeq2_DEG_",g1,"-",g2,"_cpmfilter_",params$cpmfilter,".txt",sep="")
+write.table(out_df,file=fn,sep="\t",row.names = FALSE,quote = FALSE,col.names = TRUE) 
 ```
 
 ```{r dt,echo=FALSE, warning=FALSE,message=FALSE,results='asis'}
-DT::datatable(as.data.frame(restmp), options=list(pageLength = 50,order = list(list(6, 'asc'))))
+out_df2=out_df %>% select(c(1,2,4,5,8,9))
+
+DT::datatable(as.data.frame(out_df2), options=list(pageLength = 50,order = list(list(6, 'asc')))) %>% formatRound(columns = c(3,4),digits = 3)
 ```
 
 ### Volcano
 ```{r volcano,echo=FALSE,fig.width=8,fig.height=10,fig.align='center'}
-EnhancedVolcano(res,lab=rownames(res),x="logFC",y="PValue")
+EnhancedVolcano(out_df2,lab=out_df2$GeneName,x="log2FoldChange",y="pvalue")
 ```
