@@ -22,6 +22,7 @@ knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
 setwd(params$folder)
 library("tidyverse")
 library("stats")
+library("affy")
 # library("reshape")
 library("DESeq2")
 library("edgeR")
@@ -215,8 +216,23 @@ cm_coldata=get_contrast_countmatrix_coldata(rawcountmatrix = rawcountmatrix,
 dds=get_dds(cm_coldata)
 dds_vst=vst(dds)
 vstcounts=assay(dds_vst)
-boxplot(vstcounts)
+# boxplot(vstcounts)
 
+
+par(mfrow=c(1,2))
+boxplot(log(counts(dds,normalized=FALSE)+1),
+        col=as.numeric(colData(dds)$condition)+1,
+        main="Before Normalization",horizontal=TRUE,xlab="")
+boxplot(log(counts(dds,normalized=TRUE)+1),
+        col=as.numeric(colData(dds)$condition)+1,
+        main="After Normalization",horizontal=TRUE,xlab="")
+par(mfrow=c(1,2))
+plotDensity(log(counts(dds,normalized=FALSE)+1),
+        col=as.numeric(colData(dds)$condition)+1,
+        main="",horizontal=TRUE,xlab="log2counts")
+plotDensity(log(counts(dds,normalized=TRUE)+1),
+        col=as.numeric(colData(dds)$condition)+1,
+        main="",horizontal=TRUE,xlab="log2counts")
 
 ```
 
